@@ -1,0 +1,20 @@
+[project]
+name = "agno-scraper-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "agno>=2.1.4",
+    "chonkie>=1.4.0",
+    "fastapi>=0.119.0",
+    "google-genai>=1.45.0",
+    "httpx>=0.28.1",
+    "markdownify>=1.2.0",
+    "openai>=2.4.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.32.5",
+    "sqlalchemy>=2.0.44",
+    "streamlit>=1.39.0",
+    "uvicorn[standard]>=0.37.0",
+]
