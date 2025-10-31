@@ -1,18 +1,46 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: agno_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agno_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agno_password}
+      POSTGRES_DB: ${POSTGRES_DB:-agno_scraper}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agno_user} -d ${POSTGRES_DB:-agno_scraper}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   api:
     build: .
+    container_name: agno_api
     ports:
-      - "8000:8000"
+      - "${PORT:-8000}:8000"
     environment:
       - HOST=0.0.0.0
       - PORT=8000
       - RELOAD=false
       - LOG_LEVEL=info
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-agno_user}:${POSTGRES_PASSWORD:-agno_password}@postgres:5432/${POSTGRES_DB:-agno_scraper}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     volumes:
       - .:/app
       - /app/__pycache__
+      - /app/.venv
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -21,9 +49,9 @@ services:
       retries: 3
       start_period: 40s
 
-  # Serviço opcional para desenvolvimento com hot reload
   api-dev:
     build: .
+    container_name: agno_api_dev
     ports:
       - "8001:8000"
     environment:
@@ -31,9 +59,20 @@ services:
       - PORT=8000
       - RELOAD=true
       - LOG_LEVEL=debug
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-agno_user}:${POSTGRES_PASSWORD:-agno_password}@postgres:5432/${POSTGRES_DB:-agno_scraper}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     volumes:
       - .:/app
       - /app/__pycache__
+      - /app/.venv
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     profiles:
       - dev
+
+volumes:
+  postgres_data:
+    driver: local
