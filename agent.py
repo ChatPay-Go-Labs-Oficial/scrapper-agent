@@ -11,7 +11,9 @@ from agno.models.openai import OpenAIChat
 from agno.models.google import Gemini
 from agno.db.sqlite import SqliteDb
 
-from tools import buscar_conteudo_completo_site
+# NOTA: A ferramenta de scraping foi removida do agente
+# A API agora chama a ferramenta diretamente antes de passar ao agente
+# Isso previne prompt injection e garante que apenas URLs validadas sejam usadas
 from config import MODEL_CONFIG, AGENT_INSTRUCTIONS, AGENT_CONFIG
 
 db = SqliteDb(db_file="tmp/agno_scraper_agent.db")
@@ -23,7 +25,7 @@ agent = Agent(
     # model=OpenAIChat("gpt-4o-mini"),
     model=Gemini("gemini-2.5-flash"),
     db=db,
-    tools=[buscar_conteudo_completo_site],
+    tools=[],  # Sem ferramentas - o conteúdo já vem pré-extraído da API
     add_name_to_context=AGENT_CONFIG["add_name_to_context"],
     instructions=AGENT_INSTRUCTIONS,
     enable_agentic_memory=True,

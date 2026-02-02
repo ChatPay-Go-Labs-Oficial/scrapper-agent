@@ -8,8 +8,15 @@ from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
 import asyncio
 from contextlib import asynccontextmanager
+import logging
 
 from agent import agent_os, agent
+from tools.web_scraper import buscar_conteudo_completo_site
+from utils.security import validate_url, create_safe_prompt, detect_suspicious_patterns
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 # Modelos Pydantic para request/response
@@ -94,38 +101,72 @@ def chat_with_agent(request: ChatRequest):
     Envia uma mensagem para o agente e retorna a resposta.
     """
     try:
-        # Preparar parâmetros para o agente
-        params = {
-            "url": request.url,
-            "message": request.message,
-            "stream": request.stream,
-        }
-        
-        # Adicionar user_id e session_id se fornecidos
-        if request.user_id:
-            params["user_id"] = request.user_id
-        if request.session_id:
-            params["session_id"] = request.session_id
-        
-        # Executar o agente
-        response = agent.run(input=[params["url"], params["message"]], stream=params["stream"], user_id=params["user_id"], session_id=params["session_id"])
-        
-        # Extrair o conteúdo da resposta
+        # 1. Validar a URL PRIMEIRO
+        is_valid, error_msg = validate_url(request.url)
+        if not is_valid:
+            logger.warning(f"Tentativa de URL inválida: {request.url} - Erro: {error_msg}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"URL inválida: {error_msg}"
+            )
+
+        # 2. Detectar padrões suspeitos na mensagem
+        is_suspicious, patterns = detect_suspicious_patterns(request.message)
+        if is_suspicious:
+            logger.warning(f"Padrões suspeitos detectados do usuário {request.user_id}: {patterns}")
+
+        # 3. Chamar a ferramenta de scraping APENAS na URL validada
+        logger.info(f"Buscando conteúdo da URL: {request.url}")
+        site_content = buscar_conteudo_completo_site(request.url)
+
+        # Verificar se houve erro no scraping
+        if site_content.startswith("Erro") or site_content.startswith("O site demorou"):
+            return ChatResponse(
+                response=site_content,
+                session_id=request.session_id,
+                user_id=request.user_id,
+                success=False
+            )
+
+        # 4. Criar prompt seguro com o conteúdo já extraído
+        # NÃO passamos a URL bruta para o agente, apenas o conteúdo
+        safe_prompt = create_safe_prompt(
+            site_content=site_content,
+            user_message=request.message,
+            url=request.url
+        )
+
+        # 5. Executar o agente APENAS com o prompt seguro
+        response = agent.run(
+            input=safe_prompt,
+            stream=request.stream,
+            user_id=request.user_id,
+            session_id=request.session_id
+        )
+
+        # 6. Extrair o conteúdo da resposta
         if hasattr(response, 'content'):
             response_content = response.content
         elif hasattr(response, 'response'):
             response_content = response.response
         else:
             response_content = str(response)
-        
+
+        # Adicionar aviso se houve tentativa de injection
+        if is_suspicious:
+            response_content = f"⚠️ **Nota**: Foram detectadas e bloqueadas tentativas de manipulação na sua mensagem.\n\n{response_content}"
+
         return ChatResponse(
             response=response_content,
             session_id=request.session_id,
             user_id=request.user_id,
             success=True
         )
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Erro ao processar mensagem: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao processar mensagem: {str(e)}"
@@ -141,38 +182,69 @@ def chat_with_agent_stream(request: ChatRequest):
     """
     try:
         from fastapi.responses import StreamingResponse
-        
-        def generate_response():
-            # Preparar parâmetros para o agente
-            params = {
-                "url": request.url,
-                "message": request.message,
-                "stream": True,
-            }
-            
-            # Adicionar user_id e session_id se fornecidos
-            if request.user_id:
-                params["user_id"] = request.user_id
-            if request.session_id:
-                params["session_id"] = request.session_id
-            
-            # Executar o agente com streaming
-            # Usar get() para evitar KeyError ou passar None se não existir
-            response_stream = agent.run(
-                input=[params["url"], params["message"]], 
-                stream=True, 
-                user_id=params.get("user_id"), 
-                session_id=params.get("session_id")
+
+        # 1. Validar a URL PRIMEIRO
+        is_valid, error_msg = validate_url(request.url)
+        if not is_valid:
+            logger.warning(f"Tentativa de URL inválida: {request.url} - Erro: {error_msg}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"URL inválida: {error_msg}"
             )
-            
+
+        # 2. Detectar padrões suspeitos na mensagem
+        is_suspicious, patterns = detect_suspicious_patterns(request.message)
+        if is_suspicious:
+            logger.warning(f"Padrões suspeitos detectados do usuário {request.user_id}: {patterns}")
+
+        # 3. Chamar a ferramenta de scraping APENAS na URL validada
+        logger.info(f"Buscando conteúdo da URL: {request.url}")
+        site_content = buscar_conteudo_completo_site(request.url)
+
+        # Verificar se houve erro no scraping
+        if site_content.startswith("Erro") or site_content.startswith("O site demorou"):
+            def error_generator():
+                yield f"data: {site_content}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                error_generator(),
+                media_type="text/plain",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                }
+            )
+
+        # 4. Criar prompt seguro com o conteúdo já extraído
+        safe_prompt = create_safe_prompt(
+            site_content=site_content,
+            user_message=request.message,
+            url=request.url
+        )
+
+        def generate_response():
+            # Adicionar aviso de segurança se necessário
+            if is_suspicious:
+                warning_msg = "⚠️ **Nota**: Foram detectadas e bloqueadas tentativas de manipulação na sua mensagem.\n\n"
+                yield f"data: {warning_msg}\n\n"
+
+            # Executar o agente com o prompt seguro
+            response_stream = agent.run(
+                input=safe_prompt,
+                stream=True,
+                user_id=request.user_id,
+                session_id=request.session_id
+            )
+
             for event in response_stream:
                 if hasattr(event, 'event') and event.event == "RunContent":
                     yield f"data: {event.content}\n\n"
                 elif hasattr(event, 'content'):
                     yield f"data: {event.content}\n\n"
-            
+
             yield "data: [DONE]\n\n"
-        
+
         return StreamingResponse(
             generate_response(),
             media_type="text/plain",
@@ -181,8 +253,11 @@ def chat_with_agent_stream(request: ChatRequest):
                 "Connection": "keep-alive",
             }
         )
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Erro ao processar streaming: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao processar streaming: {str(e)}"
