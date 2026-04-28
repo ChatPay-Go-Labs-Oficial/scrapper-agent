@@ -2,17 +2,19 @@
 API FastAPI para servir o agente de pesquisa de produtos.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
 import asyncio
+import os
 from contextlib import asynccontextmanager
 import logging
 
 from agent import agent_os, agent
 from tools.web_scraper import buscar_conteudo_completo_site
 from utils.security import validate_url, create_safe_prompt, detect_suspicious_patterns
+from guards.auth import verify_internal_token
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -47,11 +49,9 @@ class HealthResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gerencia o ciclo de vida da aplicação."""
-    # Startup
-    print("🚀 Iniciando API do Agente de Pesquisa de Produtos...")
+    logger.info("🚀 Iniciando API do Agente de Pesquisa de Produtos...")
     yield
-    # Shutdown
-    print("🛑 Encerrando API...")
+    logger.info("🛑 Encerrando API...")
 
 
 # Criar aplicação FastAPI
@@ -63,12 +63,16 @@ app = FastAPI(
 )
 
 # Configurar CORS
+# ALLOWED_ORIGINS deve conter apenas o domínio do Backend NestJS
+_allowed_origins = os.getenv("ALLOWED_ORIGINS", "").split(",")
+_allowed_origins = [o.strip() for o in _allowed_origins if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção, especifique domínios específicos
+    allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["POST", "GET", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -93,7 +97,7 @@ def health_check():
     )
 
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat", response_model=ChatResponse, dependencies=[Depends(verify_internal_token)])
 def chat_with_agent(request: ChatRequest):
     """
     Endpoint principal para conversar com o agente.
@@ -173,7 +177,7 @@ def chat_with_agent(request: ChatRequest):
         )
 
 
-@app.post("/chat/stream")
+@app.post("/chat/stream", dependencies=[Depends(verify_internal_token)])
 def chat_with_agent_stream(request: ChatRequest):
     """
     Endpoint para conversar com o agente usando streaming.
