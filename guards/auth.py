@@ -8,16 +8,19 @@ e nunca é logado em nenhum nível de log.
 
 import os
 import logging
+from typing import Optional
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 logger = logging.getLogger(__name__)
 
-_security = HTTPBearer(auto_error=True)
+# auto_error=False para que possamos retornar 401 manualmente quando não há
+# Authorization header — o padrão auto_error=True retorna 403 incorretamente.
+_security = HTTPBearer(auto_error=False)
 
 
 def verify_internal_token(
-    credentials: HTTPAuthorizationCredentials = Security(_security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(_security),
 ) -> None:
     """
     Valida o Bearer token interno enviado pelo Backend NestJS.
@@ -26,9 +29,19 @@ def verify_internal_token(
     Rotas públicas (/, /health) NÃO devem usar este guard.
 
     Raises:
-        HTTPException 503: Se AI_SERVICE_INTERNAL_TOKEN não estiver configurado.
+        HTTPException 401: Se o header Authorization estiver ausente.
         HTTPException 401: Se o token fornecido for inválido.
+        HTTPException 503: Se AI_SERVICE_INTERNAL_TOKEN não estiver configurado.
     """
+    # Sem header Authorization → 401 (não autenticado)
+    if not credentials:
+        logger.warning("Requisição sem header Authorization rejeitada.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token de autenticação não fornecido.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     internal_token = os.getenv("AI_SERVICE_INTERNAL_TOKEN")
 
     if not internal_token:
