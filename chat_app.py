@@ -10,10 +10,18 @@ import re
 from typing import Dict, Any, Optional
 import uuid
 import os
+import logging
 from dotenv import load_dotenv
 
 # Carregar variáveis de ambiente
 load_dotenv()
+
+# Configurar logging
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 # Configurações da API
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
@@ -34,7 +42,7 @@ def clean_agent_response(response_text: str) -> str:
     if not response_text:
         return ""
     
-    print(f"DEBUG - Input para limpeza: {repr(response_text)}")
+    logger.debug(f"Input para limpeza: {repr(response_text)}")
     
     # Aplicar apenas limpezas essenciais, preservando markdown
     cleaned = response_text
@@ -53,12 +61,12 @@ def clean_agent_response(response_text: str) -> str:
     # Debug: verificar se há caracteres invisíveis ou problemas de encoding
     special_chars = [c for c in cleaned if ord(c) > 127]
     if special_chars:
-        print(f"DEBUG - Caracteres especiais encontrados: {special_chars}")
+        logger.debug(f"Caracteres especiais encontrados: {special_chars}")
     
     # Remove espaços em branco extras no início e fim
     cleaned = cleaned.strip()
     
-    print(f"DEBUG - Output após limpeza: {repr(cleaned)}")
+    logger.debug(f"Output após limpeza: {repr(cleaned)}")
     
     return cleaned
 
@@ -98,25 +106,25 @@ def display_streaming_response(stream_response):
                         break
                     full_response += content
                     # Debug: ver o conteúdo bruto que está sendo recebido
-                    print(f"DEBUG - Conteúdo bruto recebido: {repr(content)}")
-                    print(f"DEBUG - Resposta acumulada: {repr(full_response)}")
+                    logger.debug(f"Conteúdo bruto recebido: {repr(content)}")
+                    logger.debug(f"Resposta acumulada: {repr(full_response)}")
                     
                     # Usar apenas limpeza básica, sem formatação markdown
                     cleaned_response = clean_agent_response(full_response)
-                    print(f"DEBUG - Resposta após limpeza: {repr(cleaned_response)}")
+                    logger.debug(f"Resposta após limpeza: {repr(cleaned_response)}")
                     
                     # Teste: usar st.write em vez de st.markdown para ver se há diferença
                     try:
                         message_placeholder.markdown(cleaned_response)
                     except Exception as e:
-                        print(f"DEBUG - Erro no markdown: {e}")
+                        logger.error(f"Erro no markdown: {e}")
                         message_placeholder.write(cleaned_response)
     except Exception as e:
         st.error(f"Erro no streaming: {str(e)}")
     
     # Retornar a resposta limpa sem formatação adicional
     cleaned_response = clean_agent_response(full_response)
-    print(f"DEBUG - Resposta final retornada: {repr(cleaned_response)}")
+    logger.debug(f"Resposta final retornada: {repr(cleaned_response)}")
     return cleaned_response
 
 def main():
