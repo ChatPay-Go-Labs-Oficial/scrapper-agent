@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 import logging
 
 from agent import agent_os, agent
-from tools.web_scraper import buscar_conteudo_completo_site
+from knowledge.scraping_cache import get_or_fetch
 from utils.security import validate_url, create_safe_prompt, detect_suspicious_patterns
 from guards.auth import verify_internal_token
 
@@ -30,6 +30,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="ID da sessão para manter contexto")
     stream: bool = Field(False, description="Se deve retornar resposta em streaming")
     prompt_ai: Optional[str] = Field(None, description="Prompt customizado da persona do vendedor")
+    product_id: Optional[str] = Field(None, description="ID do produto para cache de scraping")
 
 
 class ChatResponse(BaseModel):
@@ -122,7 +123,7 @@ def chat_with_agent(request: ChatRequest):
 
         # 3. Chamar a ferramenta de scraping APENAS na URL validada
         logger.info(f"Buscando conteúdo da URL: {request.url}")
-        site_content = buscar_conteudo_completo_site(request.url)
+        site_content = get_or_fetch(product_id=request.product_id, url=request.url)
 
         # Verificar se houve erro no scraping
         if site_content.startswith("Erro") or site_content.startswith("O site demorou"):
@@ -205,7 +206,7 @@ def chat_with_agent_stream(request: ChatRequest):
 
         # 3. Chamar a ferramenta de scraping APENAS na URL validada
         logger.info(f"Buscando conteúdo da URL: {request.url}")
-        site_content = buscar_conteudo_completo_site(request.url)
+        site_content = get_or_fetch(product_id=request.product_id, url=request.url)
 
         # Verificar se houve erro no scraping
         if site_content.startswith("Erro") or site_content.startswith("O site demorou"):
