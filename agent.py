@@ -22,8 +22,8 @@ db = SqliteDb(db_file="tmp/agno_scraper_agent.db")
 agent = Agent(
     name=AGENT_CONFIG["name"],
     role=AGENT_CONFIG["role"],
-    # model=OpenAIChat("gpt-4o-mini"),
-    model=Gemini("gemini-2.5-flash"),
+    model=OpenAIChat("gpt-4o-mini"),
+    # model=Gemini("gemini-2.5-flash"),
     db=db,
     tools=[],  # Sem ferramentas - o conteúdo já vem pré-extraído da API
     add_name_to_context=AGENT_CONFIG["add_name_to_context"],

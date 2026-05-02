@@ -29,6 +29,7 @@ class ChatRequest(BaseModel):
     user_id: Optional[str] = Field(None, description="ID do usuário para rastreamento")
     session_id: Optional[str] = Field(None, description="ID da sessão para manter contexto")
     stream: bool = Field(False, description="Se deve retornar resposta em streaming")
+    prompt_ai: Optional[str] = Field(None, description="Prompt customizado da persona do vendedor")
 
 
 class ChatResponse(BaseModel):
@@ -137,7 +138,8 @@ def chat_with_agent(request: ChatRequest):
         safe_prompt = create_safe_prompt(
             site_content=site_content,
             user_message=request.message,
-            url=request.url
+            url=request.url,
+            prompt_ai=request.prompt_ai
         )
 
         # 5. Executar o agente APENAS com o prompt seguro
@@ -224,7 +226,8 @@ def chat_with_agent_stream(request: ChatRequest):
         safe_prompt = create_safe_prompt(
             site_content=site_content,
             user_message=request.message,
-            url=request.url
+            url=request.url,
+            prompt_ai=request.prompt_ai
         )
 
         def generate_response():
