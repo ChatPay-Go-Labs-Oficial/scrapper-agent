@@ -15,6 +15,14 @@ from agno.db.sqlite import SqliteDb
 # A API agora chama a ferramenta diretamente antes de passar ao agente
 # Isso previne prompt injection e garante que apenas URLs validadas sejam usadas
 from config import MODEL_CONFIG, AGENT_INSTRUCTIONS, AGENT_CONFIG
+import os
+
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini-2.0-flash")
+
+if "gpt" in DEFAULT_MODEL.lower():
+    active_model = OpenAIChat(DEFAULT_MODEL)
+else:
+    active_model = Gemini(DEFAULT_MODEL)
 
 db = SqliteDb(db_file="tmp/agno_scraper_agent.db")
 
@@ -22,8 +30,7 @@ db = SqliteDb(db_file="tmp/agno_scraper_agent.db")
 agent = Agent(
     name=AGENT_CONFIG["name"],
     role=AGENT_CONFIG["role"],
-    model=OpenAIChat("gpt-4o-mini"),
-    # model=Gemini("gemini-2.5-flash"),
+    model=active_model,
     db=db,
     tools=[],  # Sem ferramentas - o conteúdo já vem pré-extraído da API
     add_name_to_context=AGENT_CONFIG["add_name_to_context"],
