@@ -13,7 +13,7 @@ import logging
 
 from agent import agent_os, agent
 from knowledge.scraping_cache import get_or_fetch
-from utils.security import validate_url, create_safe_prompt, detect_suspicious_patterns
+from guards.security import validate_url, create_safe_prompt, detect_suspicious_patterns
 from guards.auth import verify_internal_token
 
 # Configurar logging
