@@ -16,6 +16,7 @@ from agent import agent_os, agent
 from knowledge.scraping_cache import get_or_fetch
 from guards.security import validate_url, create_safe_prompt, detect_suspicious_patterns
 from guards.auth import verify_internal_token
+from guards.input_guard import check_input, EXFILTRATION_RESPONSE, INJECTION_RESPONSE
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -307,14 +308,29 @@ def inference_stream(request: InferenceRequest):
     O conteúdo do produto é vazio e o agente responde apenas com o que estiver disponível.
     """
     try:
-        # 1. Detectar padrões suspeitos na mensagem
-        is_suspicious, patterns = detect_suspicious_patterns(request.message)
-        if is_suspicious:
+        # 1. Guard de entrada: injection/exfiltration (sem chamada ao LLM)
+        guard_result = check_input(request.message)
+        if not guard_result.passed:
+            blocked_response = EXFILTRATION_RESPONSE if guard_result.is_exfiltration else INJECTION_RESPONSE
             logger.warning(
-                "Padrões suspeitos detectados do seller %s (product_id=%s): %s",
+                "Input bloqueado (%s) seller=%s product=%s session=%s",
+                guard_result.blocked_reason,
                 request.seller_id,
                 request.product_id,
-                patterns,
+                request.session_id,
+            )
+
+            def blocked_stream():
+                yield f"data: {blocked_response}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                blocked_stream(),
+                media_type="text/plain",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
             )
 
         # 2. Conteúdo do produto ainda não disponível (RAG será integrado na F2-KNW-001)
@@ -329,12 +345,6 @@ def inference_stream(request: InferenceRequest):
         )
 
         def generate_response():
-            if is_suspicious:
-                warning_msg = (
-                    "⚠️ **Nota**: Foram detectadas e bloqueadas tentativas de manipulação na sua mensagem.\n\n"
-                )
-                yield f"data: {warning_msg}\n\n"
-
             response_stream = agent.run(
                 input=safe_prompt,
                 stream=True,
