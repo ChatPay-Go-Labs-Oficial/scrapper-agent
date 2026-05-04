@@ -3,6 +3,7 @@ API FastAPI para servir o agente de pesquisa de produtos.
 """
 
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
@@ -33,12 +34,29 @@ class ChatRequest(BaseModel):
     product_id: Optional[str] = Field(None, description="ID do produto para cache de scraping")
 
 
+class InferenceRequest(BaseModel):
+    """Modelo para requisições internas de inferência (novo formato)."""
+    product_id: str = Field(..., description="UUID do produto")
+    seller_id: str = Field(..., description="UUID do vendedor")
+    message: str = Field(..., description="Mensagem do comprador")
+    session_id: str = Field(..., description="ID da sessão para manter contexto")
+    prompt_ai: Optional[str] = Field(None, description="Prompt customizado da persona do vendedor")
+
+
 class ChatResponse(BaseModel):
     """Modelo para respostas do chat."""
     response: str = Field(..., description="Resposta do agente")
     session_id: Optional[str] = Field(None, description="ID da sessão")
     user_id: Optional[str] = Field(None, description="ID do usuário")
     success: bool = Field(True, description="Indica se a operação foi bem-sucedida")
+
+
+class InferenceResponse(BaseModel):
+    """Modelo para respostas de inferência não-streaming."""
+    response: str = Field(..., description="Resposta do agente")
+    session_id: Optional[str] = Field(None, description="ID da sessão")
+    knowledge_source: Optional[str] = Field(None, description="Fonte de conhecimento usada")
+    model_used: Optional[str] = Field(None, description="Modelo de IA utilizado")
 
 
 class HealthResponse(BaseModel):
@@ -92,6 +110,16 @@ def root():
 @app.get("/health", response_model=HealthResponse)
 def health_check():
     """Endpoint para verificar o status da API e do agente."""
+    return HealthResponse(
+        status="healthy",
+        agent_name=agent.name,
+        agent_role=agent.role
+    )
+
+
+@app.get("/inference/health", response_model=HealthResponse)
+def inference_health_check():
+    """Health check específico para as rotas internas de inferência."""
     return HealthResponse(
         status="healthy",
         agent_name=agent.name,
@@ -188,8 +216,6 @@ def chat_with_agent_stream(request: ChatRequest):
     Retorna a resposta em tempo real conforme o agente processa.
     """
     try:
-        from fastapi.responses import StreamingResponse
-
         # 1. Validar a URL PRIMEIRO
         is_valid, error_msg = validate_url(request.url)
         if not is_valid:
@@ -269,6 +295,77 @@ def chat_with_agent_stream(request: ChatRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao processar streaming: {str(e)}"
+        )
+
+
+@app.post("/inference/stream", dependencies=[Depends(verify_internal_token)])
+def inference_stream(request: InferenceRequest):
+    """
+    Endpoint interno para inferência com o novo schema.
+
+    Observação: nesta fase, ainda não há RAG integrado.
+    O conteúdo do produto é vazio e o agente responde apenas com o que estiver disponível.
+    """
+    try:
+        # 1. Detectar padrões suspeitos na mensagem
+        is_suspicious, patterns = detect_suspicious_patterns(request.message)
+        if is_suspicious:
+            logger.warning(
+                "Padrões suspeitos detectados do seller %s (product_id=%s): %s",
+                request.seller_id,
+                request.product_id,
+                patterns,
+            )
+
+        # 2. Conteúdo do produto ainda não disponível (RAG será integrado na F2-KNW-001)
+        site_content = ""
+
+        # 3. Criar prompt seguro com o conteúdo disponível
+        safe_prompt = create_safe_prompt(
+            site_content=site_content,
+            user_message=request.message,
+            url="N/A",
+            prompt_ai=request.prompt_ai,
+        )
+
+        def generate_response():
+            if is_suspicious:
+                warning_msg = (
+                    "⚠️ **Nota**: Foram detectadas e bloqueadas tentativas de manipulação na sua mensagem.\n\n"
+                )
+                yield f"data: {warning_msg}\n\n"
+
+            response_stream = agent.run(
+                input=safe_prompt,
+                stream=True,
+                user_id=request.seller_id,
+                session_id=request.session_id,
+            )
+
+            for event in response_stream:
+                if hasattr(event, 'event') and event.event == "RunContent":
+                    yield f"data: {event.content}\n\n"
+                elif hasattr(event, 'content'):
+                    yield f"data: {event.content}\n\n"
+
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            generate_response(),
+            media_type="text/plain",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao processar inferência: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao processar inferência: {str(e)}"
         )
 
 
