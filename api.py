@@ -11,8 +11,14 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 import logging
+import asyncpg
 
 from agent import agent_os, agent
+from llm.output_guard import check_output, OUTPUT_BLOCKED_RESPONSE
+from llm.prompt_builder import build_prompt
+from knowledge.router import KnowledgeSource, resolve_knowledge
+from config.settings import settings
+from openai import OpenAI
 from knowledge.scraping_cache import get_or_fetch
 from guards.security import validate_url, create_safe_prompt, detect_suspicious_patterns
 from guards.auth import verify_internal_token
@@ -71,7 +77,13 @@ class HealthResponse(BaseModel):
 async def lifespan(app: FastAPI):
     """Gerencia o ciclo de vida da aplicação."""
     logger.info("🚀 Iniciando API do Agente de Pesquisa de Produtos...")
+    postgres_url = settings.database_url
+    if postgres_url.startswith("sqlite"):
+        postgres_url = settings.worker_database_url
+
+    app.state.db_pool = await asyncpg.create_pool(postgres_url)
     yield
+    await app.state.db_pool.close()
     logger.info("🛑 Encerrando API...")
 
 
@@ -300,7 +312,7 @@ def chat_with_agent_stream(request: ChatRequest):
 
 
 @app.post("/inference/stream", dependencies=[Depends(verify_internal_token)])
-def inference_stream(request: InferenceRequest):
+async def inference_stream(request: InferenceRequest):
     """
     Endpoint interno para inferência com o novo schema.
 
@@ -333,15 +345,65 @@ def inference_stream(request: InferenceRequest):
                 },
             )
 
-        # 2. Conteúdo do produto ainda não disponível (RAG será integrado na F2-KNW-001)
-        site_content = ""
+        # 2. Validar ownership e obter URL da sales page
+        db_pool = app.state.db_pool
+        product_row = await db_pool.fetchrow(
+            "SELECT \"salesPageUrl\" FROM product WHERE id = $1 AND \"userId\" = $2",
+            request.product_id,
+            request.seller_id,
+        )
+        if not product_row:
+            raise HTTPException(status_code=403, detail="Ownership check failed")
 
-        # 3. Criar prompt seguro com o conteúdo disponível
-        safe_prompt = create_safe_prompt(
-            site_content=site_content,
+        # 3. Gerar embedding da query (OpenAI)
+        client = OpenAI(api_key=settings.openai_api_key)
+        embedding_response = await asyncio.to_thread(
+            client.embeddings.create,
+            model="text-embedding-3-small",
+            input=[request.message],
+            dimensions=768,
+        )
+        query_embedding = embedding_response.data[0].embedding
+
+        # 4. Resolver contexto via Knowledge Router
+        knowledge_result = await resolve_knowledge(
+            product_id=request.product_id,
+            seller_id=request.seller_id,
+            query=request.message,
+            query_embedding=query_embedding,
+            db_pool=db_pool,
+            redis_client=None,
+            sales_page_url=product_row["salesPageUrl"],
+        )
+        logger.info(
+            "Knowledge source=%s seller=%s product=%s session=%s",
+            knowledge_result.source.value,
+            request.seller_id,
+            request.product_id,
+            request.session_id,
+        )
+
+        if knowledge_result.source == KnowledgeSource.FAQ:
+            def faq_stream():
+                yield f"data: {knowledge_result.context}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                faq_stream(),
+                media_type="text/plain",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+
+        # 5. Construir prompt com delimitadores XML
+        safe_prompt = build_prompt(
+            knowledge_context=knowledge_result.context,
+            conversation_history=[],
             user_message=request.message,
-            url="N/A",
-            prompt_ai=request.prompt_ai,
+            prompt_ai_custom=request.prompt_ai,
+            knowledge_source=knowledge_result.source.value,
         )
 
         def generate_response():
@@ -352,12 +414,22 @@ def inference_stream(request: InferenceRequest):
                 session_id=request.session_id,
             )
 
+            chunks = []
             for event in response_stream:
                 if hasattr(event, 'event') and event.event == "RunContent":
-                    yield f"data: {event.content}\n\n"
+                    chunks.append(event.content)
                 elif hasattr(event, 'content'):
-                    yield f"data: {event.content}\n\n"
+                    chunks.append(event.content)
 
+            full_response = "".join(chunks)
+            chunks_used = [knowledge_result.context] if knowledge_result.source == KnowledgeSource.RAG else []
+            if not check_output(full_response, chunks_used):
+                yield f"data: {OUTPUT_BLOCKED_RESPONSE}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            for chunk in chunks:
+                yield f"data: {chunk}\n\n"
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(
