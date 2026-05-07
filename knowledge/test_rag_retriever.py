@@ -27,11 +27,11 @@ async def test_validate_ownership_rejects_invalid():
 @pytest.mark.asyncio
 async def test_retrieve_filters_below_threshold():
     rows = [
-        {"chunk_text": "A", "similarity": 0.60},
-        {"chunk_text": "B", "similarity": 0.64},
+        {"chunk_text": "A", "similarity": 0.55},
+        {"chunk_text": "B", "similarity": 0.59},
     ]
     db_pool = FakeDbPool("prod-1", rows)
-    result = await retrieve([0.1, 0.2], "prod-1", "seller-1", db_pool, similarity_threshold=0.65)
+    result = await retrieve([0.1, 0.2], "prod-1", "seller-1", db_pool, similarity_threshold=0.60)
     assert result is None
 
 

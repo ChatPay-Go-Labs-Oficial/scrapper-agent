@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
-SIMILARITY_THRESHOLD = 0.65
+SIMILARITY_THRESHOLD = 0.60
 DEFAULT_TOP_K = 5
 
 
@@ -15,7 +15,7 @@ async def validate_ownership(product_id: str, seller_id: str, db_pool) -> None:
     Raises PermissionError when ownership validation fails.
     """
     ownership = await db_pool.fetchval(
-        "SELECT id FROM product WHERE id = $1 AND user_id = $2",
+        'SELECT id FROM "product" WHERE id = $1 AND "userId" = $2',
         product_id,
         seller_id,
     )
