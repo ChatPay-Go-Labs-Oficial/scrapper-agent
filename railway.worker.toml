@@ -1,0 +1,9 @@
+[build]
+builder = "DOCKERFILE"
+dockerfile = "Dockerfile"
+dockerBuildTarget = "worker"
+
+[deploy]
+startCommand = "uv run python -m worker.ingestion_worker"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

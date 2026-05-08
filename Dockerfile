@@ -1,32 +1,39 @@
-# Dockerfile para a API do Agente de Pesquisa de Produtos
-FROM python:3.12-slim
+# Dockerfile multi-stage para API e Worker
+FROM python:3.12-slim AS base
 
-# Definir diretório de trabalho
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
 WORKDIR /app
 
-# Instalar dependências do sistema
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copiar arquivos de dependências
 COPY pyproject.toml uv.lock ./
 
-# Instalar uv e dependências
-RUN pip install uv
-RUN uv sync --frozen
+RUN pip install uv \
+    && uv sync --frozen
 
-# Copiar código da aplicação
 COPY . .
 
-# Criar usuário não-root
-RUN useradd --create-home --shell /bin/bash app
-RUN chown -R app:app /app
+RUN useradd --create-home --shell /bin/bash app \
+    && chown -R app:app /app
+
+
+FROM base AS api
+
 USER app
 
-# Expor porta
 EXPOSE 8000
 
-# Comando para executar a aplicação
 CMD ["uv", "run", "python", "main.py"]
+
+
+FROM base AS worker
+
+USER app
+
+CMD ["uv", "run", "python", "-m", "worker.ingestion_worker"]
