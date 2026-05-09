@@ -25,6 +25,9 @@ class Settings(BaseSettings):
 
     # Databases
     database_url: str = Field("sqlite:///agno_scraper_agent.db", env="DATABASE_URL")
+    # AI service's own PostgreSQL on Supabase (pgvector, product_min, knowledge_chunks)
+    ai_database_url: str = Field("", env="AI_DATABASE_URL")
+    # Backend Railway PostgreSQL — used by worker only (ingestion_jobs, products)
     worker_database_url: str = Field("postgresql://postgres:root@localhost:5432/chatcheckout", env="WORKER_DATABASE_URL")
     worker_redis_url: str = Field("redis://:redis_password_secret@localhost:6379/0", env="WORKER_REDIS_URL")
 
