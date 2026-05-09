@@ -77,13 +77,15 @@ class HealthResponse(BaseModel):
 async def lifespan(app: FastAPI):
     """Gerencia o ciclo de vida da aplicação."""
     logger.info("🚀 Iniciando API do Agente de Pesquisa de Produtos...")
-    postgres_url = settings.database_url
-    if postgres_url.startswith("sqlite"):
-        postgres_url = settings.worker_database_url
-
-    app.state.db_pool = await asyncpg.create_pool(postgres_url)
+    ai_db_url = settings.ai_database_url
+    if not ai_db_url:
+        logger.warning("AI_DATABASE_URL não configurada — ownership check e RAG estarão indisponíveis")
+        app.state.db_pool = None
+    else:
+        app.state.db_pool = await asyncpg.create_pool(ai_db_url)
     yield
-    await app.state.db_pool.close()
+    if app.state.db_pool:
+        await app.state.db_pool.close()
     logger.info("🛑 Encerrando API...")
 
 
@@ -345,10 +347,12 @@ async def inference_stream(request: InferenceRequest):
                 },
             )
 
-        # 2. Validar ownership e obter URL da sales page
+        # 2. Validar ownership e obter URL da sales page via product_min (Supabase)
         db_pool = app.state.db_pool
+        if not db_pool:
+            raise HTTPException(status_code=503, detail="AI database not configured")
         product_row = await db_pool.fetchrow(
-            "SELECT \"salesPageUrl\" FROM product WHERE id = $1 AND \"userId\" = $2",
+            "SELECT sales_page_url FROM product_min WHERE product_id = $1 AND seller_id = $2",
             request.product_id,
             request.seller_id,
         )
@@ -373,7 +377,7 @@ async def inference_stream(request: InferenceRequest):
             query_embedding=query_embedding,
             db_pool=db_pool,
             redis_client=None,
-            sales_page_url=product_row["salesPageUrl"],
+            sales_page_url=product_row["sales_page_url"],
         )
         logger.info(
             "Knowledge source=%s seller=%s product=%s session=%s",

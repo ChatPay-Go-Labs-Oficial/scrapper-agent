@@ -31,7 +31,8 @@ logger = logging.getLogger("ingestion_worker")
 # ──────────────────────────────────────────────────────────────
 # Configurações
 # ──────────────────────────────────────────────────────────────
-WORKER_DATABASE_URL: str = os.getenv("WORKER_DATABASE_URL", "")
+WORKER_DATABASE_URL: str = os.getenv("WORKER_DATABASE_URL", "")   # Railway: ingestion_jobs, products
+AI_DATABASE_URL: str = os.getenv("AI_DATABASE_URL", "")            # Supabase: knowledge_chunks
 WORKER_REDIS_URL: str = os.getenv("WORKER_REDIS_URL", "redis://localhost:6379/0")
 R2_ENDPOINT: str = f"https://{os.getenv('R2_ACCOUNT_ID')}.r2.cloudflarestorage.com"
 R2_BUCKET: str = os.getenv("R2_BUCKET_NAME", "")
@@ -136,7 +137,7 @@ async def _generate_embeddings_batched(texts: list[str]) -> list[list[float]]:
     return all_embeddings
 
 
-async def process_ebook_job(pg: asyncpg.Connection, job_data: dict[str, Any]) -> None:
+async def process_ebook_job(pg: asyncpg.Connection, pg_ai: asyncpg.Connection, job_data: dict[str, Any]) -> None:
     """
     Orquestra todo o pipeline de ingestão de um único job.
     Atualiza o status no banco em cada etapa.
@@ -176,8 +177,8 @@ async def process_ebook_job(pg: asyncpg.Connection, job_data: dict[str, Any]) ->
         if not chunk_texts:
             raise ValueError("Nenhum chunk gerado após o chunking do PDF")
 
-        # 5. Deletar chunks antigos do produto (re-ingestão substitui tudo)
-        deleted = await pg.execute(
+        # 5. Deletar chunks antigos do produto no Supabase (re-ingestão substitui tudo)
+        deleted = await pg_ai.execute(
             "DELETE FROM knowledge_chunks WHERE product_id = $1 AND source_type = 'ebook_pdf'",
             product_id,
         )
@@ -188,12 +189,12 @@ async def process_ebook_job(pg: asyncpg.Connection, job_data: dict[str, Any]) ->
         embeddings = await _generate_embeddings_batched(chunk_texts)
         logger.info("Embeddings gerados: %d", len(embeddings))
 
-        # 7. Bulk INSERT no pgvector via SQL raw (TypeORM não suporta vector natively)
+        # 7. Bulk INSERT no Supabase pgvector via SQL raw
         records = [
             (
                 product_id,
                 seller_id,
-                _sanitize_text(chunk_texts[i]),  # Remove null bytes inválidos para o PostgreSQL
+                _sanitize_text(chunk_texts[i]),
                 str(embeddings[i]),  # pgvector aceita "[0.1, 0.2, ...]"
                 i,
                 "ebook_pdf",
@@ -201,7 +202,7 @@ async def process_ebook_job(pg: asyncpg.Connection, job_data: dict[str, Any]) ->
             )
             for i in range(len(chunk_texts))
         ]
-        await pg.executemany(
+        await pg_ai.executemany(
             """
             INSERT INTO knowledge_chunks
                 (product_id, seller_id, chunk_text, embedding, chunk_index, source_type, source_meta)
@@ -209,9 +210,9 @@ async def process_ebook_job(pg: asyncpg.Connection, job_data: dict[str, Any]) ->
             """,
             records,
         )
-        logger.info("Chunks inseridos no pgvector: %d", len(records))
+        logger.info("Chunks inseridos no Supabase pgvector: %d", len(records))
 
-        # 8. Atualizar produto e job
+        # 8. Atualizar produto (Railway) e job (Railway)
         await pg.execute(
             "UPDATE product SET knowledge_ready = TRUE, knowledge_updated_at = NOW() WHERE id = $1",
             product_id,
@@ -263,17 +264,23 @@ async def _parse_bullmq_job(redis: Redis, raw_id: str) -> dict[str, Any] | None:
 
 async def run_worker() -> None:
     """Loop infinito do worker: aguarda jobs, processa e repete."""
-    logger.info("Worker iniciando... Redis: %s | PostgreSQL: %s", WORKER_REDIS_URL, WORKER_DATABASE_URL)
+    logger.info(
+        "Worker iniciando... Redis: %s | Backend DB: %s | AI DB: %s",
+        WORKER_REDIS_URL, WORKER_DATABASE_URL, AI_DATABASE_URL,
+    )
 
     if not WORKER_DATABASE_URL:
-        raise RuntimeError("WORKER_DATABASE_URL não configurada")
+        raise RuntimeError("WORKER_DATABASE_URL não configurada (Railway PostgreSQL)")
+    if not AI_DATABASE_URL:
+        raise RuntimeError("AI_DATABASE_URL não configurada (Supabase PostgreSQL)")
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY não configurada")
     if not R2_BUCKET:
         raise RuntimeError("R2_BUCKET_NAME não configurada")
 
     redis = Redis.from_url(WORKER_REDIS_URL, decode_responses=False)
-    pg = await asyncpg.connect(WORKER_DATABASE_URL)
+    pg = await asyncpg.connect(WORKER_DATABASE_URL)      # Railway: ingestion_jobs, products
+    pg_ai = await asyncpg.connect(AI_DATABASE_URL)        # Supabase: knowledge_chunks
 
     try:
         logger.info("Worker aguardando jobs na fila '%s'...", BULLMQ_WAIT_KEY)
@@ -282,7 +289,6 @@ async def run_worker() -> None:
                 # BRPOPLPUSH: move o job de 'wait' para 'active' atomicamente
                 result = await redis.brpoplpush(BULLMQ_WAIT_KEY, BULLMQ_ACTIVE_KEY, timeout=POLL_TIMEOUT_SECONDS)
                 if result is None:
-                    # Timeout: nenhum job na fila, continua aguardando
                     continue
 
                 raw_id = result.decode() if isinstance(result, bytes) else result
@@ -294,9 +300,8 @@ async def run_worker() -> None:
                     continue
 
                 try:
-                    await process_ebook_job(pg, job_data)
+                    await process_ebook_job(pg, pg_ai, job_data)
                 except Exception:
-                    # Erro já logado em process_ebook_job; worker não crasha
                     logger.warning("Job id=%s falhou, continuando para o próximo", raw_id)
 
             except asyncpg.PostgresError as db_err:
@@ -305,14 +310,20 @@ async def run_worker() -> None:
                     await pg.close()
                 except Exception:
                     pass
+                try:
+                    await pg_ai.close()
+                except Exception:
+                    pass
                 pg = await asyncpg.connect(WORKER_DATABASE_URL)
+                pg_ai = await asyncpg.connect(AI_DATABASE_URL)
 
             except Exception as loop_err:
                 logger.exception("Erro inesperado no loop do worker: %s", loop_err)
-                await asyncio.sleep(2)  # Pequena pausa antes de continuar
+                await asyncio.sleep(2)
     finally:
         logger.info("Worker encerrando...")
         await pg.close()
+        await pg_ai.close()
         await redis.aclose()
 
 
