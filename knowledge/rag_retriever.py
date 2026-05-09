@@ -9,13 +9,9 @@ DEFAULT_TOP_K = 5
 
 
 async def validate_ownership(product_id: str, seller_id: str, db_pool) -> None:
-    """
-    Ensure the product belongs to the seller before any retrieval.
-
-    Raises PermissionError when ownership validation fails.
-    """
+    """Ensure the product belongs to the seller before any retrieval."""
     ownership = await db_pool.fetchval(
-        'SELECT id FROM "product" WHERE id = $1 AND "userId" = $2',
+        "SELECT product_id FROM product_min WHERE product_id = $1 AND seller_id = $2",
         product_id,
         seller_id,
     )
@@ -41,7 +37,7 @@ async def retrieve(
     """
     Retrieve relevant chunks scoped to a single product.
 
-    Returned text is for internal prompt context only and must not be sent directly
+    Returned text is for internal prompt context only — do not expose directly
     to end users without output guards.
     """
     await validate_ownership(product_id, seller_id, db_pool)

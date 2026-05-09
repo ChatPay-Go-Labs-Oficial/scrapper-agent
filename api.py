@@ -82,7 +82,7 @@ async def lifespan(app: FastAPI):
         logger.warning("AI_DATABASE_URL não configurada — ownership check e RAG estarão indisponíveis")
         app.state.db_pool = None
     else:
-        app.state.db_pool = await asyncpg.create_pool(ai_db_url)
+        app.state.db_pool = await asyncpg.create_pool(ai_db_url, statement_cache_size=0)
     yield
     if app.state.db_pool:
         await app.state.db_pool.close()
@@ -432,8 +432,11 @@ async def inference_stream(request: InferenceRequest):
                 yield "data: [DONE]\n\n"
                 return
 
-            for chunk in chunks:
-                yield f"data: {chunk}\n\n"
+            # Fix missing spaces after sentence-ending punctuation caused by LLM tokenization
+            import re
+            full_response = re.sub(r'([.!?])([^\s\d"\'\)\]\}])', r'\1 \2', full_response)
+
+            yield f"data: {full_response}\n\n"
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(
