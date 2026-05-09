@@ -64,4 +64,4 @@ CREATE TABLE IF NOT EXISTS ai_usage_logs (
     created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_usage_seller_month
-    ON ai_usage_logs(seller_id, DATE_TRUNC('month', created_at));
+    ON ai_usage_logs(seller_id, created_at);
