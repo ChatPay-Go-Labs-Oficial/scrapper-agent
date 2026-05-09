@@ -280,7 +280,7 @@ async def run_worker() -> None:
 
     redis = Redis.from_url(WORKER_REDIS_URL, decode_responses=False)
     pg = await asyncpg.connect(WORKER_DATABASE_URL)      # Railway: ingestion_jobs, products
-    pg_ai = await asyncpg.connect(AI_DATABASE_URL)        # Supabase: knowledge_chunks
+    pg_ai = await asyncpg.connect(AI_DATABASE_URL, statement_cache_size=0)        # Supabase: knowledge_chunks
 
     try:
         logger.info("Worker aguardando jobs na fila '%s'...", BULLMQ_WAIT_KEY)
@@ -315,7 +315,7 @@ async def run_worker() -> None:
                 except Exception:
                     pass
                 pg = await asyncpg.connect(WORKER_DATABASE_URL)
-                pg_ai = await asyncpg.connect(AI_DATABASE_URL)
+                pg_ai = await asyncpg.connect(AI_DATABASE_URL, statement_cache_size=0)
 
             except Exception as loop_err:
                 logger.exception("Erro inesperado no loop do worker: %s", loop_err)
